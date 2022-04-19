@@ -26,7 +26,10 @@ mod debug_info;
 mod debug_line;
 
 mod aranges;
+#[allow(non_upper_case_globals, clippy::upper_case_acronyms)]
+mod call_frame;
 mod dwarf_expr;
+mod stack;
 
 #[allow(dead_code)]
 fn parse_debug_line_elf(filename: &str) -> Result<Vec<debug_line::DebugLineCU>, Error> {
