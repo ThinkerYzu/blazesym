@@ -19,7 +19,9 @@ use std::thread;
 
 use regex::Regex;
 
-#[allow(non_upper_case_globals, unused)]
+use std::collections::HashMap;
+
+#[allow(non_upper_case_globals)]
 mod constants;
 #[allow(non_upper_case_globals)]
 mod debug_info;
@@ -34,11 +36,17 @@ fn parse_debug_line_elf(filename: &str) -> Result<Vec<debug_line::DebugLineCU>, 
     debug_line::parse_debug_line_elf_parser(&parser, &[])
 }
 
+struct DwarfResolverBack {
+    fnames: Vec<&'static str>,
+    fname_to_dlcu: Vec<(u32, u32)>,
+}
+
 /// DwarfResolver provide abilities to query DWARF information of binaries.
 pub struct DwarfResolver {
     parser: Rc<Elf64Parser>,
     debug_line_cus: Vec<debug_line::DebugLineCU>,
     addr_to_dlcu: Vec<(u64, u32)>,
+    back: RefCell<DwarfResolverBack>,
     enable_debug_info_syms: bool,
     debug_info_syms: RefCell<Option<Vec<DWSymInfo<'static>>>>,
     addr_di_syms: RefCell<Vec<&'static DWSymInfo<'static>>>,
@@ -77,6 +85,10 @@ impl DwarfResolver {
             parser,
             debug_line_cus,
             addr_to_dlcu,
+            back: RefCell::new(DwarfResolverBack {
+                fnames: Vec::new(),
+                fname_to_dlcu: Vec::new(),
+            }),
             enable_debug_info_syms: debug_info_symbols,
             debug_info_syms: RefCell::new(None),
             addr_di_syms: RefCell::new(vec![]),
@@ -406,6 +418,77 @@ impl DwarfResolver {
         }
 
         Ok(syms)
+    }
+
+    fn build_fname_to_dlcu(
+        debug_line_cus: &Vec<debug_line::DebugLineCU>,
+    ) -> (Vec<&'static str>, Vec<(u32, u32)>) {
+        let mut fname_order = HashMap::<&str, u32>::new();
+        let mut fname_to_dlcu = Vec::new();
+        let mut entry_cnt = 0;
+        for dlcu in debug_line_cus {
+            for finfo in &dlcu.files {
+                if fname_order.get(finfo.name.as_str()).is_none() {
+                    fname_order.insert(finfo.name.as_str(), 0_u32);
+                }
+                entry_cnt += 1;
+            }
+        }
+        let mut fnames: Vec<&'static str> = fname_order
+            .keys()
+            .map(|x| unsafe { mem::transmute(*x) })
+            .collect();
+        fnames.sort();
+        for (order, fname) in fnames.iter().enumerate() {
+            fname_order.insert(fname, order as u32);
+        }
+        fname_to_dlcu.reserve(entry_cnt);
+        for (dlcuidx, dlcu) in debug_line_cus.iter().enumerate() {
+            for finfo in &dlcu.files {
+                let fnidx = fname_order.get(finfo.name.as_str()).unwrap();
+                fname_to_dlcu.push((*fnidx, dlcuidx as u32));
+            }
+        }
+        fname_to_dlcu.sort();
+        (fnames, fname_to_dlcu)
+    }
+
+    fn ensure_fname_to_dlcu(&self) {
+        let mut me = self.back.borrow_mut();
+        let (fnames, fname_to_dlcu) = Self::build_fname_to_dlcu(&self.debug_line_cus);
+        me.fnames = fnames;
+        me.fname_to_dlcu = fname_to_dlcu;
+    }
+
+    pub fn find_line_addresses(&self, filename: &str, line_no: usize) -> Vec<u64> {
+        self.ensure_fname_to_dlcu();
+
+        let back = self.back.borrow();
+        let mut addresses = vec![];
+        if let Ok(str_order) = back.fnames.binary_search(&filename) {
+            if let Ok(idx_found) = back
+                .fname_to_dlcu
+                .binary_search_by_key(&str_order, |x| x.0 as usize)
+            {
+                let mut idx = idx_found;
+                while idx > 0 && back.fname_to_dlcu[idx - 1].0 as usize == str_order {
+                    idx -= 1;
+                    let dlcu_idx = back.fname_to_dlcu[idx].1 as usize;
+                    let dlcu = &self.debug_line_cus[dlcu_idx];
+                    dlcu.find_line_addresses(filename, line_no, &mut addresses);
+                }
+                idx = idx_found;
+                while idx < back.fname_to_dlcu.len()
+                    && back.fname_to_dlcu[idx].0 as usize == str_order
+                {
+                    let dlcu_idx = back.fname_to_dlcu[idx].1 as usize;
+                    let dlcu = &self.debug_line_cus[dlcu_idx];
+                    dlcu.find_line_addresses(filename, line_no, &mut addresses);
+                    idx += 1;
+                }
+            }
+        }
+        addresses
     }
 
     #[cfg(test)]
@@ -956,5 +1039,27 @@ mod tests {
         } else {
             assert!(false, "fail to get the information of local variables");
         }
+    }
+
+    #[test]
+    fn find_line_addresses() {
+        let args: Vec<String> = env::args().collect();
+        let bin_name = &args[0];
+        let example_path = Path::new(bin_name)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("data")
+            .join("fibonacci");
+        let dwarf = DwarfResolver::open(example_path.to_str().unwrap(), true, true).unwrap();
+
+        let addresses = dwarf.find_line_addresses("fibonacci.c", 11);
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0], 0x118c);
     }
 }

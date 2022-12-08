@@ -175,6 +175,9 @@ trait SymResolver {
     /// Return `(fb, [(var-name, dwarf-expression), ...])`.
     fn get_local_vars(&self, address: u64) -> Option<(&[u8], Vec<(String, &[u8])>)>;
 
+    /// Find the addresses of instructions of a line.
+    fn find_line_addresses(&self, filename: &str, line_no: usize) -> Vec<u64>;
+
     fn repr(&self) -> String;
 }
 
@@ -513,6 +516,14 @@ impl SymResolver for ElfResolver {
         }
     }
 
+    fn find_line_addresses(&self, filename: &str, line_no: usize) -> Vec<u64> {
+        if let ElfBackend::Dwarf(dwarf) = &self.backend {
+            dwarf.find_line_addresses(filename, line_no)
+        } else {
+            vec![]
+        }
+    }
+
     fn repr(&self) -> String {
         match self.backend {
             ElfBackend::Dwarf(_) => format!("DWARF {}", self.file_name.display()),
@@ -590,6 +601,10 @@ impl SymResolver for KernelResolver {
 
     fn get_local_vars(&self, _address: u64) -> Option<(&[u8], Vec<(String, &[u8])>)> {
         None
+    }
+
+    fn find_line_addresses(&self, _filename: &str, _line_no: usize) -> Vec<u64> {
+        vec![]
     }
 
     fn repr(&self) -> String {
@@ -1215,6 +1230,36 @@ impl BlazeSymbolizer {
             })
             .collect();
         info
+    }
+
+    /// Find the addresses of lines.
+    ///
+    /// Return a list of the addresses for each line.  The returned
+    /// addresses are recommended breakpoint locations.
+    ///
+    /// # Arguments
+    ///
+    /// * `sym_srcs` - A list of symbol and debug sources.
+    /// * `file_lines` - a list of (filename, line number) pairs.
+    /// * Return a list of address list.  Each (filename, line number)
+    ///          pair has one address list.
+    pub fn find_line_addresses(
+        &self,
+        sym_srcs: &[SymbolSrcCfg],
+        file_lines: &[(&str, usize)],
+    ) -> Vec<Vec<u64>> {
+        let mut lines = vec![];
+        if let Ok(resolver_map) = ResolverMap::new(sym_srcs, &self.cache_holder) {
+            for (filename, line_no) in file_lines {
+                let mut line_addrs = vec![];
+                for (_, resolver) in &resolver_map.resolvers {
+                    let mut addresses = resolver.find_line_addresses(filename, *line_no);
+                    line_addrs.append(&mut addresses);
+                }
+                lines.push(line_addrs);
+            }
+        }
+        lines
     }
 }
 

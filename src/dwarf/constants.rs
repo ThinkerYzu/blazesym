@@ -66,3 +66,11 @@ pub const DW_FORM_addrx1: u8 = 0x29;
 pub const DW_FORM_addrx2: u8 = 0x2a;
 pub const DW_FORM_addrx3: u8 = 0x2b;
 pub const DW_FORM_addrx4: u8 = 0x2c;
+
+pub const DW_LNCT_path: u32 = 0x1;
+pub const DW_LNCT_directory_index: u32 = 0x2;
+pub const DW_LNCT_timestamp: u32 = 0x3;
+pub const DW_LNCT_size: u32 = 0x4;
+pub const DW_LNCT_MD5: u32 = 0x5;
+pub const DW_LNCT_lo_user: u32 = 0x2000;
+pub const DW_LNCT_hi_user: u32 = 0x3fff;

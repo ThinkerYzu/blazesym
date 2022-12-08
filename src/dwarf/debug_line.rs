@@ -3,9 +3,12 @@
 //! DWARF debug line information provides the information of lines in
 //! the source files.  It provide a way to map addresses to the source
 //! file names and line numbers.
+use super::constants;
+use super::debug_info;
 use crate::elf::Elf64Parser;
 use crate::tools::{
-    decode_leb128, decode_leb128_s, decode_udword, decode_uhalf, decode_uword, search_address_key,
+    decode_leb128, decode_leb128_s, decode_udword, decode_uhalf, decode_uword, extract_string,
+    search_address_key,
 };
 
 use std::io::{Error, ErrorKind};
@@ -23,13 +26,40 @@ struct DebugLinePrologueV2 {
     opcode_base: u8,
 }
 
-/// DebugLinePrologue is actually a V4.
-///
-/// DebugLinePrologueV2 will be converted to this type.
 #[repr(C, packed)]
-struct DebugLinePrologue {
+struct DebugLinePrologueV4 {
     total_length: u32,
     version: u16,
+    prologue_length: u32,
+    minimum_instruction_length: u8,
+    maximum_ops_per_instruction: u8,
+    default_is_stmt: u8,
+    line_base: i8,
+    line_range: u8,
+    opcode_base: u8,
+}
+
+#[repr(C, packed)]
+struct DebugLinePrologueV5 {
+    total_length: u32,
+    version: u16,
+    address_size: u8,
+    segment_selector_size: u8,
+    prologue_length: u32,
+    minimum_instruction_length: u8,
+    maximum_ops_per_instruction: u8,
+    default_is_stmt: u8,
+    line_base: i8,
+    line_range: u8,
+    opcode_base: u8,
+}
+
+/// DebugLinePrologue{V2,V4,V5} will be converted to this type.
+struct DebugLinePrologue {
+    total_length: u64,
+    version: u16,
+    address_size: u8,
+    segment_selector_size: u8,
     prologue_length: u32,
     minimum_instruction_length: u8,
     maximum_ops_per_instruction: u8,
@@ -93,6 +123,24 @@ impl DebugLineCU {
         };
 
         Some((dir, file, states.line))
+    }
+
+    pub fn find_line_addresses(&self, filename: &str, line_no: usize, addresses: &mut Vec<u64>) {
+        let file_idx = if let Some((idx, _)) = self
+            .files
+            .iter()
+            .enumerate()
+            .find(|(_, x)| x.name == filename)
+        {
+            idx + 1 // file indices are 1 based.
+        } else {
+            return;
+        };
+        for dlstates in &self.matrix {
+            if dlstates.file == file_idx && dlstates.line == line_no && dlstates.is_stmt {
+                addresses.push(dlstates.address);
+            }
+        }
     }
 }
 
@@ -201,46 +249,299 @@ fn parse_debug_line_files(data_buf: &[u8]) -> Result<(Vec<DebugLineFileInfo>, us
     ))
 }
 
+fn extract_debug_line_dirs_or_files_v5<'a, F>(
+    prologue: &DebugLinePrologue,
+    data_buf: &'a [u8],
+    pos: usize,
+    dwarf_sz: usize,
+    mut handler: F,
+) -> Result<usize, Error>
+where
+    F: FnMut(usize, u64, u64, debug_info::AttrValue<'a>) -> Result<(), Error>,
+{
+    let saved_pos = pos;
+    let mut pos = pos;
+
+    // Format descriptions
+    let format_count = data_buf[pos];
+    pos += 1;
+    let mut formats = vec![];
+    for _ in 0..format_count {
+        if let Some((content_type_code, bytes)) = decode_leb128(&data_buf[pos..]) {
+            pos += bytes as usize;
+            if let Some((form_code, bytes)) = decode_leb128(&data_buf[pos..]) {
+                pos += bytes as usize;
+                formats.push((content_type_code, form_code));
+                continue;
+            }
+        }
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "fail to parse directory or file entries",
+        ));
+    }
+
+    // Entries
+    let (count, bytes) = if let Some((v, bytes)) = decode_leb128(&data_buf[pos..]) {
+        (v, bytes)
+    } else {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "fail to parse directory entries",
+        ));
+    };
+    pos += bytes as usize;
+    for seq in 0..count {
+        for (content_type_code, form_code) in &formats {
+            if let Some((v, bytes)) = debug_info::extract_attr_value(
+                &data_buf[pos..],
+                *form_code as u8,
+                dwarf_sz,
+                prologue.address_size as usize,
+            ) {
+                pos += bytes;
+
+                handler(seq as usize, *content_type_code, *form_code, v)?;
+            } else {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "fail to parse directory entries",
+                ));
+            }
+        }
+    }
+    Ok(pos - saved_pos)
+}
+
+/// Parse directories and files for DWARFv5
+///
+/// Before v5, directories and files in the debug line info section
+/// are arrays that every element has a fixed number of members.
+/// DWARFv5 defines additional format descriptions to define the
+/// format of directory entries and file entries to allow compilers to
+/// add or remove members of entries.
+///
+/// The format of directory entries and file entries.
+///  - directory_entry_format_count (u8)
+///  - directory_entry_format (pairs of uleb128)
+///  - directory_count (uleb128)
+///  - directories
+///  - file_name_entry_format_count (u8)
+///  - file_name_entry_format (pairs of uleb128)
+///  - file_names_count (uleb128)
+///  - file_names
+///
+/// Every entry in directories comprised members defined in
+/// directory_entry_format.
+///
+/// Every entry in file_names comprised members defined in
+/// file_name_entry_format.
+///
+/// Check the p156 & p157 in <https://dwarfstd.org/doc/DWARF5.pdf>
+fn parse_debug_line_dirs_files_v5(
+    prologue: &DebugLinePrologue,
+    data_buf: &[u8],
+    pos: usize,
+    dlstr_buf: &[u8],
+    dwarf_sz: usize,
+) -> Result<((Vec<String>, Vec<DebugLineFileInfo>), usize), Error> {
+    let mut pos = pos;
+    let saved_pos = pos;
+
+    // Directories
+    let mut inc_dirs = vec![];
+    let dirs_collector = |_seq, content_type_code, form_code, v| {
+        let name = match v {
+            debug_info::AttrValue::String(s) => s,
+            debug_info::AttrValue::Unsigned(v_u64) => {
+                if form_code as u8 == constants::DW_FORM_line_strp {
+                    if let Some(name) = extract_string(dlstr_buf, v_u64 as usize) {
+                        name
+                    } else {
+                        ""
+                    }
+                } else {
+                    ""
+                }
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "fail to parse directory entries",
+                ));
+            }
+        };
+
+        if content_type_code as u32 == constants::DW_LNCT_path {
+            inc_dirs.push(name.to_string());
+        }
+        Ok(())
+    };
+    let bytes =
+        extract_debug_line_dirs_or_files_v5(prologue, data_buf, pos, dwarf_sz, dirs_collector)?;
+    pos += bytes;
+
+    // Files
+    let mut files = vec![];
+    let files_collector = |seq, content_type_code, form_code, v| {
+        if seq >= files.len() {
+            files.push(DebugLineFileInfo {
+                name: "".to_string(),
+                dir_idx: 0,
+                mod_tm: 0,
+                size: 0,
+            });
+        }
+        match content_type_code as u32 {
+            constants::DW_LNCT_path => {
+                let name = match v {
+                    debug_info::AttrValue::String(s) => s,
+                    debug_info::AttrValue::Unsigned(v_u64) => {
+                        let mut name = "";
+                        if form_code as u8 == constants::DW_FORM_line_strp {
+                            if let Some(v) = extract_string(dlstr_buf, v_u64 as usize) {
+                                name = v;
+                            }
+                        }
+                        name
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "fail to parse file entries",
+                        ));
+                    }
+                };
+                files.last_mut().unwrap().name = name.to_string();
+            }
+            constants::DW_LNCT_directory_index => {
+                if let debug_info::AttrValue::Unsigned(v_u64) = v {
+                    files.last_mut().unwrap().dir_idx = v_u64 as u32;
+                } else if let debug_info::AttrValue::Unsigned128(v_u128) = v {
+                    files.last_mut().unwrap().dir_idx = v_u128 as u32;
+                } else {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "fail to parse file entries",
+                    ));
+                }
+            }
+            _ => {
+                // unknown type codes skip
+            }
+        }
+
+        Ok(())
+    };
+    let bytes =
+        extract_debug_line_dirs_or_files_v5(prologue, data_buf, pos, dwarf_sz, files_collector)?;
+    pos += bytes;
+
+    // DWARFv5, the file with the index 0 is the current
+    // compilation file name.  But, it doesn't exist in the
+    // earlier DWARF.  And, the indices start from 1 for the
+    // earlier DWARF.  We drop the first entry (index 0) to
+    // compatible with the earlier DWARF.  The dropped entry
+    // should be saved somewhere if we need it.
+    files.remove(0);
+
+    Ok(((inc_dirs, files), pos - saved_pos))
+}
+
 fn parse_debug_line_cu(
     parser: &Elf64Parser,
     addresses: &[u64],
     reused_buf: &mut Vec<u8>,
+    dlstr_buf: &[u8],
 ) -> Result<DebugLineCU, Error> {
-    let mut prologue_sz: usize = mem::size_of::<DebugLinePrologueV2>();
-    let prologue_v4_sz: usize = mem::size_of::<DebugLinePrologue>();
+    let mut prologue_size: usize = mem::size_of::<DebugLinePrologueV2>();
+    let prologue_v4_size: usize = mem::size_of::<DebugLinePrologueV4>();
+    let prologue_v5_size: usize = mem::size_of::<DebugLinePrologueV5>();
     let buf = reused_buf;
 
-    buf.resize(prologue_sz, 0);
+    buf.resize(prologue_size, 0);
+
     unsafe { parser.read_raw(buf.as_mut_slice()) }?;
     let prologue_raw = buf.as_mut_ptr() as *mut DebugLinePrologueV2;
     // SAFETY: `prologue_raw` is valid for reads and `DebugLinePrologueV2` is
     //         comprised only of objects that are valid for any bit pattern.
-    let v2 = unsafe { prologue_raw.read_unaligned() };
+    let mut v2 = unsafe { prologue_raw.read_unaligned() };
 
-    if v2.version != 0x2 && v2.version != 0x4 {
+    let mut extra_bytes = 0;
+    let mut dwarf_sz = 4;
+    let total_length = if v2.total_length == 0xffffffff {
+        buf.resize(prologue_size + 8, 0);
+        unsafe { parser.read_raw(&mut buf.as_mut_slice()[prologue_size..])? };
+        let prologue_raw = unsafe { buf.as_mut_ptr().add(8) } as *mut DebugLinePrologueV2;
+        v2 = unsafe { prologue_raw.read_unaligned() };
+        prologue_size += 8;
+        extra_bytes = 8;
+        dwarf_sz = 8;
+        unsafe { (buf.as_mut_ptr().add(4) as *const u64).read_unaligned() }
+    } else {
+        v2.total_length as u64
+    };
+
+    if v2.version != 0x2 && v2.version != 0x4 && v2.version != 0x5 {
         let version = v2.version;
         return Err(Error::new(
             ErrorKind::Unsupported,
-            format!("Support DWARF version 2 & 4 (version: {})", version),
+            format!("Support DWARF version 2, 4 & 5 (version: {})", version),
         ));
     }
 
-    let prologue = if v2.version == 0x4 {
-        // Upgrade to V4.
+    let prologue = if v2.version == 0x5 {
+        // Convert V5
+        buf.resize(prologue_v5_size + extra_bytes, 0);
+        unsafe { parser.read_raw(&mut buf.as_mut_slice()[prologue_size..])? };
+        let prologue_raw = unsafe { buf.as_mut_ptr().add(extra_bytes) } as *mut DebugLinePrologueV5;
+        let v5 = unsafe { prologue_raw.read_unaligned() };
+        let prologue = DebugLinePrologue {
+            total_length,
+            version: v5.version,
+            address_size: v5.address_size,
+            segment_selector_size: v5.segment_selector_size,
+            prologue_length: v5.prologue_length,
+            minimum_instruction_length: v5.minimum_instruction_length,
+            maximum_ops_per_instruction: v5.maximum_ops_per_instruction,
+            default_is_stmt: v5.default_is_stmt,
+            line_base: v5.line_base,
+            line_range: v5.line_range,
+            opcode_base: v5.opcode_base,
+        };
+        prologue_size = prologue_v5_size + extra_bytes;
+        prologue
+    } else if v2.version == 0x4 {
+        // Upgrade
         // V4 has more fields to read.
-        buf.resize(prologue_v4_sz, 0);
-        unsafe { parser.read_raw(&mut buf.as_mut_slice()[prologue_sz..]) }?;
-        let prologue_raw = buf.as_mut_ptr() as *mut DebugLinePrologue;
+        buf.resize(prologue_v4_size + extra_bytes, 0);
+        unsafe { parser.read_raw(&mut buf.as_mut_slice()[prologue_size..]) }?;
+        let prologue_raw = unsafe { buf.as_mut_ptr().add(extra_bytes) } as *mut DebugLinePrologueV4;
         // SAFETY: `prologue_raw` is valid for reads and `DebugLinePrologue` is
         //         comprised only of objects that are valid for any bit pattern.
-        let prologue_v4 = unsafe { prologue_raw.read_unaligned() };
-        prologue_sz = prologue_v4_sz;
-        prologue_v4
+        let v4 = unsafe { prologue_raw.read_unaligned() };
+        let prologue = DebugLinePrologue {
+            total_length,
+            version: v4.version,
+            address_size: mem::size_of::<*const u8>() as u8,
+            segment_selector_size: 0,
+            prologue_length: v4.prologue_length,
+            minimum_instruction_length: v4.minimum_instruction_length,
+            maximum_ops_per_instruction: v4.maximum_ops_per_instruction,
+            default_is_stmt: v4.default_is_stmt,
+            line_base: v4.line_base,
+            line_range: v4.line_range,
+            opcode_base: v4.opcode_base,
+        };
+        prologue_size = prologue_v4_size + extra_bytes;
+        prologue
     } else {
-        // Convert V2 to V4
-        let prologue_v4 = DebugLinePrologue {
-            total_length: v2.total_length,
+        // Convert V2
+        let prologue = DebugLinePrologue {
+            total_length,
             version: v2.version,
+            address_size: mem::size_of::<*const u8>() as u8,
+            segment_selector_size: 0,
             prologue_length: v2.prologue_length,
             minimum_instruction_length: v2.minimum_instruction_length,
             maximum_ops_per_instruction: 0,
@@ -249,10 +550,10 @@ fn parse_debug_line_cu(
             line_range: v2.line_range,
             opcode_base: v2.opcode_base,
         };
-        prologue_v4
+        prologue
     };
 
-    let to_read = prologue.total_length as usize + 4 - prologue_sz;
+    let to_read = prologue.total_length as usize + 4 + extra_bytes - prologue_size;
     let data_buf = buf;
     if to_read <= data_buf.capacity() {
         // Gain better performance by skipping initialization.
@@ -269,11 +570,20 @@ fn parse_debug_line_cu(
     std_op_lengths.extend_from_slice(&data_buf[pos..pos + std_op_num]);
     pos += std_op_num;
 
-    let (inc_dirs, bytes) = parse_debug_line_dirs(&data_buf[pos..])?;
-    pos += bytes;
+    let (inc_dirs, files) = if prologue.version == 0x5 {
+        let (dirs_files, bytes) =
+            parse_debug_line_dirs_files_v5(&prologue, &data_buf, pos, dlstr_buf, dwarf_sz)?;
+        pos += bytes;
+        dirs_files
+    } else {
+        let (inc_dirs, bytes) = parse_debug_line_dirs(&data_buf[pos..])?;
+        pos += bytes;
 
-    let (files, bytes) = parse_debug_line_files(&data_buf[pos..])?;
-    pos += bytes;
+        let (files, bytes) = parse_debug_line_files(&data_buf[pos..])?;
+        pos += bytes;
+
+        (inc_dirs, files)
+    };
 
     let matrix = run_debug_line_stmts(&data_buf[pos..], &prologue, addresses)?;
 
@@ -618,6 +928,12 @@ pub fn parse_debug_line_elf_parser(
     parser: &Elf64Parser,
     addresses: &[u64],
 ) -> Result<Vec<DebugLineCU>, Error> {
+    let dlstr_buf = if let Ok(dlstr_idx) = parser.find_section(".debug_line_str") {
+        parser.read_section_raw_cache(dlstr_idx)?
+    } else {
+        &[]
+    };
+
     let debug_line_idx = parser.find_section(".debug_line")?;
     let debug_line_sz = parser.get_section_size(debug_line_idx)?;
     let mut remain_sz = debug_line_sz;
@@ -629,7 +945,7 @@ pub fn parse_debug_line_elf_parser(
     let mut all_cus = Vec::<DebugLineCU>::new();
     let mut buf = Vec::<u8>::new();
     while remain_sz > prologue_size {
-        let debug_line_cu = parse_debug_line_cu(parser, &not_found, &mut buf)?;
+        let debug_line_cu = parse_debug_line_cu(parser, &not_found, &mut buf, dlstr_buf)?;
         let prologue = &debug_line_cu.prologue;
         remain_sz -= prologue.total_length as usize + 4;
 
@@ -673,6 +989,12 @@ pub fn parse_debug_line_elf_parser(
     Ok(all_cus)
 }
 
+#[allow(dead_code)]
+fn parse_debug_line_elf(filename: &str) -> Result<Vec<DebugLineCU>, Error> {
+    let parser = Elf64Parser::open(filename)?;
+    parse_debug_line_elf_parser(&parser, &[])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,6 +1029,8 @@ mod tests {
         let prologue = DebugLinePrologue {
             total_length: 0,
             version: 4,
+            address_size: mem::size_of::<*const u8>() as u8,
+            segment_selector_size: 0,
             prologue_length: 0,
             minimum_instruction_length: 1,
             maximum_ops_per_instruction: 1,
@@ -767,6 +1091,8 @@ mod tests {
         let prologue = DebugLinePrologue {
             total_length: 0,
             version: 4,
+            address_size: mem::size_of::<*const u8>() as u8,
+            segment_selector_size: 0,
             prologue_length: 0,
             minimum_instruction_length: 1,
             maximum_ops_per_instruction: 1,

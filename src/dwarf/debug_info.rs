@@ -236,7 +236,7 @@ pub enum AttrValue<'a> {
 /// * `addr_sz` - The size of an address of the target platform. (4 for 32-bits and 8 for 64-bits)
 ///
 /// Return AttrValue and the number of bytes it takes.
-fn extract_attr_value(
+pub fn extract_attr_value(
     data: &[u8],
     form: u8,
     dwarf_sz: usize,

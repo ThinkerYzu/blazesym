@@ -199,6 +199,10 @@ impl SymResolver for KSymResolver {
         None
     }
 
+    fn find_line_addresses(&self, _filename: &str, _line_no: usize) -> Vec<u64> {
+        vec![]
+    }
+
     fn repr(&self) -> String {
         String::from("KSymResolver")
     }
