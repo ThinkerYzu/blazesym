@@ -201,13 +201,39 @@ impl DwarfResolver {
         }
 
         match cu_offsets.binary_search(&offset) {
-            Ok(idx) => if idx == cu_offsets.len() - 1 {
-                None
-            } else {
-                Some(cu_offsets[idx])
-            },
+            Ok(idx) => {
+                if idx == cu_offsets.len() - 1 {
+                    None
+                } else {
+                    Some(cu_offsets[idx])
+                }
+            }
             Err(idx) => Some(cu_offsets[idx - 1]),
         }
+    }
+
+    /// Build a DIEIter for the DIE at an offset.
+    fn build_dieiter_with_die_offset(
+        &self,
+        offset: usize,
+    ) -> Option<(debug_info::UnitHeader, debug_info::DIEIter, debug_info::DIE)> {
+        let cu_off = self.find_cu_offset(offset)?;
+        let die_offset = offset - cu_off;
+
+        let parser = &self.parser;
+        let info_sect_idx = parser.find_section(".debug_info").ok()?;
+        let info_data = parser.read_section_raw_cache(info_sect_idx).ok()?;
+        let abbrev_sect_idx = parser.find_section(".debug_abbrev").ok()?;
+        let abbrev_data = parser.read_section_raw_cache(abbrev_sect_idx).ok()?;
+        let mut units = debug_info::UnitIter::new(&info_data[cu_off..], abbrev_data);
+        let (uhdr, mut dieiter) = units.next()?;
+        let die_cu = dieiter.next()?;
+        if die_cu.tag != constants::DW_TAG_compile_unit {
+            // The first DIE should be a compile unit.
+            return None;
+        }
+        dieiter.seek_to_any(die_offset).ok()?;
+        Some((uhdr, dieiter, die_cu))
     }
 
     /// Find the address of a symbol from DWARF.
