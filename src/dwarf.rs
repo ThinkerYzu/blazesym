@@ -40,6 +40,8 @@ pub struct DwarfResolver {
     addr_to_dlcu: Vec<(u64, u32)>,
     enable_debug_info_syms: bool,
     debug_info_syms: RefCell<Option<Vec<DWSymInfo<'static>>>>,
+    // Offsets to the CUs.
+    cu_offsets: RefCell<Vec<usize>>,
 }
 
 impl DwarfResolver {
@@ -75,6 +77,7 @@ impl DwarfResolver {
             addr_to_dlcu,
             enable_debug_info_syms: debug_info_symbols,
             debug_info_syms: RefCell::new(None),
+            cu_offsets: RefCell::new(vec![]),
         })
     }
 
@@ -163,6 +166,48 @@ impl DwarfResolver {
             *dis_ref = Some(unsafe { mem::transmute(debug_info_syms) });
         }
         Ok(())
+    }
+
+    fn ensure_cu_offsets(&self) -> Result<(), Error> {
+        let mut cu_offsets = self.cu_offsets.borrow_mut();
+        if !cu_offsets.is_empty() {
+            return Ok(());
+        }
+
+        let info_sect_idx = self.parser.find_section(".debug_info")?;
+        let info_data = self.parser.read_section_raw_cache(info_sect_idx)?;
+        let abbrev_sect_idx = self.parser.find_section(".debug_abbrev")?;
+        let abbrev_data = self.parser.read_section_raw_cache(abbrev_sect_idx)?;
+        let units = debug_info::UnitIter::new(info_data, abbrev_data);
+
+        let mut offset = 0;
+        for (uhdr, _) in units {
+            cu_offsets.push(offset);
+            offset += uhdr.unit_size();
+        }
+        // No CU beyond this offset.
+        cu_offsets.push(offset);
+
+        Ok(())
+    }
+
+    /// Find the offset of the CU containing the given offset.
+    fn find_cu_offset(&self, offset: usize) -> Option<usize> {
+        self.ensure_cu_offsets().ok()?;
+
+        let cu_offsets = self.cu_offsets.borrow();
+        if cu_offsets.is_empty() {
+            return None;
+        }
+
+        match cu_offsets.binary_search(&offset) {
+            Ok(idx) => if idx == cu_offsets.len() - 1 {
+                None
+            } else {
+                Some(cu_offsets[idx])
+            },
+            Err(idx) => Some(cu_offsets[idx - 1]),
+        }
     }
 
     /// Find the address of a symbol from DWARF.
