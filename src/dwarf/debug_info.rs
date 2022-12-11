@@ -935,7 +935,7 @@ impl<'a> Iterator for DIEIter<'a> {
             return None;
         }
 
-        let saved_off = self.off;
+        let saved_off = self.off + self.off_delta;
         let (abbrev_idx, bytes) = decode_leb128_128(&self.data[self.off..])?;
         self.off += bytes as usize;
         if abbrev_idx == 0 {
