@@ -92,6 +92,14 @@ impl UnitHeader {
             UnitHeader::Unknown(h) => h.hdr_size,
         }
     }
+
+    pub fn address_size(&self) -> usize {
+        match self {
+            UnitHeader::CompileV4(h) => h.address_size as usize,
+            UnitHeader::CompileV5(h) => h.address_size as usize,
+            UnitHeader::Unknown(_h) => 0,
+        }
+    }
 }
 
 #[derive(Clone)]
