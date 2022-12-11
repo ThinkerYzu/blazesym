@@ -24,6 +24,7 @@ mod constants;
 #[allow(non_upper_case_globals)]
 mod debug_info;
 mod debug_line;
+mod local_vars;
 
 mod aranges;
 
@@ -276,6 +277,31 @@ impl DwarfResolver {
         }
         dieiter.seek_to_any(die_offset).ok()?;
         Some((uhdr, dieiter, die_cu))
+    }
+
+    pub fn get_local_vars(&self, address: u64) -> Option<(&[u8], Vec<(String, &[u8])>)> {
+        let sym_idx = if let Some(idx) = self.find_di_sym_idx_addr(address) {
+            idx
+        } else {
+            return None;
+        };
+        let addr_di_syms = self.addr_di_syms.borrow();
+        let sym = addr_di_syms[sym_idx];
+        let (uhdr, dieiter, mut die_cu) =
+            if let Some((uhdr, itr, die_cu)) = self.build_dieiter_with_die_offset(sym.die_offset) {
+                (uhdr, itr, die_cu)
+            } else {
+                return None;
+            };
+
+        if uhdr.version() != 0x4 {
+            // V4 & V5 have different way to ahndle DW_AT_ranges.  V4
+            // stores address ranges in the .debug_ranges section.  V5
+            // stores them in the .debug_addr section.
+            return None;
+        };
+
+        local_vars::find_local_vars_subprog(&self.parser, &uhdr, &mut die_cu, dieiter, address)
     }
 
     /// Find the address of a symbol from DWARF.
@@ -666,6 +692,7 @@ fn debug_info_parse_symbols<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[cfg(feature = "nightly")]
     use test::Bencher;
@@ -897,5 +924,37 @@ mod tests {
         let parser = Elf64Parser::open(&bin_name).unwrap();
 
         let () = b.iter(|| debug_info_parse_symbols(&parser, None, 1).unwrap());
+    }
+
+    #[test]
+    fn get_local_vars() {
+        let args: Vec<String> = env::args().collect();
+        let bin_name = &args[0];
+        let example_path = Path::new(bin_name)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("data")
+            .join("fibonacci-v4");
+        let example_s = example_path.as_path().to_str().unwrap();
+
+        let resolver_r = DwarfResolver::open(example_s, true, true);
+        assert!(resolver_r.is_ok());
+        let resolver = resolver_r.unwrap();
+        let addr = 0x1166;
+
+        if let Some((fb, vars)) = resolver.get_local_vars(addr) {
+            assert_eq!(fb.len(), 1);
+            assert_eq!(vars.len(), 1);
+            assert_eq!(vars[0].0, "n");
+            assert_eq!(vars[0].1.len(), 2);
+        } else {
+            assert!(false, "fail to get the information of local variables");
+        }
     }
 }
