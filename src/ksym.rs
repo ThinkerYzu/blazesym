@@ -195,6 +195,10 @@ impl SymResolver for KSymResolver {
         &self.file_name
     }
 
+    fn get_local_vars(&self, _address: u64) -> Option<(&[u8], Vec<(String, &[u8])>)> {
+        None
+    }
+
     fn repr(&self) -> String {
         String::from("KSymResolver")
     }
