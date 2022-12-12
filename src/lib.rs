@@ -385,7 +385,7 @@ impl ElfResolver {
             return Err(Error::new(ErrorKind::InvalidData, "unknown e_type"));
         }
 
-        let loaded_address = if e_type == elf::ET_EXEC {
+        let loaded_address = if e_type == elf::ET_EXEC || loaded_address == 0 {
             low_addr
         } else {
             loaded_address
