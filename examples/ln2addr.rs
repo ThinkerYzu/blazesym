@@ -1,6 +1,6 @@
 extern crate blazesym;
 
-use blazesym::{BlazeSymbolizer, SymbolSrcCfg};
+use blazesym::{BlazeSymbolizer, SymbolSrcCfg, SymbolizerFeature};
 use std::env;
 use std::path;
 
@@ -25,14 +25,31 @@ fn main() {
         show_usage();
         return;
     };
+
+    let features = vec![SymbolizerFeature::DebugInfoSymbols(true)];
+    let resolver = BlazeSymbolizer::new_opt(&features).unwrap();
+
     let sym_srcs = [SymbolSrcCfg::Elf {
         file_name: path::PathBuf::from(bin_name),
         base_address: 0x0,
     }];
-    let resolver = BlazeSymbolizer::new().unwrap();
 
     let lines = resolver.find_line_addresses(&sym_srcs, &[(src_name, line_no)]);
+    println!("Addresses of {}:{}", src_name, line_no);
     for addr in &lines[0] {
-        println!("{:x}", addr);
+        println!("    {:x}", addr);
+    }
+    println!("Total {}", lines[0].len());
+
+    if !lines.is_empty() && !lines[0].is_empty() {
+        let addr = lines[0][0];
+        println!("");
+        println!("Local Variables at {:x}:", addr);
+        let all_vars = resolver.get_local_vars(&sym_srcs, &[addr]);
+        let vars = &all_vars[0];
+        for var in &vars.variables {
+            println!("    {}", var.name);
+        }
+        println!("Total {}", vars.variables.len());
     }
 }
