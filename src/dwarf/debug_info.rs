@@ -1083,9 +1083,15 @@ impl<'a> Iterator for UnitIter<'a> {
                 ))
             }
             UnitHeader::CompileV5(ref _cuh) => {
-                todo!(); // BlazeSym supports only v4 so far.
+                #[cfg(debug_assertions)]
+                eprintln!("V5 DIEs are unsupported yet");
+                self.next()
             }
-            _ => self.next(),
+            UnitHeader::Unknown(ref _cuh) => {
+                #[cfg(debug_assertions)]
+                eprintln!("unsupported DIE (version 0x{:x})", _cuh.version);
+                self.next()
+            }
         }
     }
 }
