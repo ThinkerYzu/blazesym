@@ -778,6 +778,11 @@ impl Elf64Parser {
         self.file.borrow_mut().read_exact(buf)?;
         Ok(())
     }
+
+    pub fn skip(&self, bytes: i64) -> Result<(), Error> {
+        self.file.borrow_mut().seek(SeekFrom::Current(bytes))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

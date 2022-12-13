@@ -945,7 +945,30 @@ pub fn parse_debug_line_elf_parser(
     let mut all_cus = Vec::<DebugLineCU>::new();
     let mut buf = Vec::<u8>::new();
     while remain_sz > prologue_size {
-        let debug_line_cu = parse_debug_line_cu(parser, &not_found, &mut buf, dlstr_buf)?;
+        let debug_line_cu =
+            if let Ok(cu) = parse_debug_line_cu(parser, &not_found, &mut buf, dlstr_buf) {
+                cu
+            } else {
+                // Try to skip CU that we fail to parse.
+                if buf.len() < 4 {
+                    break;
+                }
+                let mut total_length = decode_uword(&buf[..4]) as u64;
+                if total_length == 0xffffffff {
+                    if buf.len() < 24 {
+                        break;
+                    }
+                    total_length = decode_udword(&buf[4..]) + 8;
+                }
+                if remain_sz <= total_length as usize + 4 {
+                    break;
+                }
+                let skip = total_length + 4 - buf.len() as u64;
+                parser.skip(skip as i64)?;
+                remain_sz -= total_length as usize + 4;
+                continue;
+            };
+
         let prologue = &debug_line_cu.prologue;
         remain_sz -= prologue.total_length as usize + 4;
 
