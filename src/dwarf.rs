@@ -26,6 +26,7 @@ mod debug_info;
 mod debug_line;
 
 mod aranges;
+mod dwarf_expr;
 
 #[allow(dead_code)]
 fn parse_debug_line_elf(filename: &str) -> Result<Vec<debug_line::DebugLineCU>, Error> {
