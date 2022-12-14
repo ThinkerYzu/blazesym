@@ -254,3 +254,42 @@ pub fn decode_sword(data: &[u8]) -> i32 {
 pub fn decode_udword(data: &[u8]) -> u64 {
     decode_uword(data) as u64 | ((decode_uword(&data[4..]) as u64) << 32)
 }
+
+#[allow(dead_code)]
+#[inline(always)]
+pub fn decode_sdword(data: &[u8]) -> i64 {
+    let udw = decode_udword(data);
+    if udw >= 0x8000000000000000 {
+        ((udw as i128) - 0x10000000000000000) as i64
+    } else {
+        udw as i64
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn decode_uN(sz: usize, raw: &[u8]) -> u64 {
+    match sz {
+        1 => raw[0] as u64,
+        2 => decode_uhalf(raw) as u64,
+        4 => decode_uword(raw) as u64,
+        8 => decode_udword(raw) as u64,
+        _ => panic!("invalid unsigned integer size: {}", sz),
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn decode_iN(sz: usize, raw: &[u8]) -> i64 {
+    match sz {
+        1 => {
+            if raw[0] & 0x80 == 0x80 {
+                -((!raw[0]) as i64 + 1)
+            } else {
+                raw[0] as i64
+            }
+        }
+        2 => decode_shalf(raw) as i64,
+        4 => decode_sword(raw) as i64,
+        8 => decode_sdword(raw) as i64,
+        _ => panic!("invalid unsigned integer size: {}", sz),
+    }
+}
