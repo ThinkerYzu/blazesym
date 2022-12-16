@@ -77,7 +77,7 @@ pub enum UnitHeader {
 }
 
 impl UnitHeader {
-    fn unit_size(&self) -> usize {
+    pub fn unit_size(&self) -> usize {
         match self {
             UnitHeader::CompileV4(h) => h.init_length + (if h.bits64 { 12 } else { 4 }),
             UnitHeader::CompileV5(h) => h.init_length + (if h.bits64 { 12 } else { 4 }),
@@ -85,7 +85,7 @@ impl UnitHeader {
         }
     }
 
-    fn header_size(&self) -> usize {
+    pub fn header_size(&self) -> usize {
         match self {
             UnitHeader::CompileV4(h) => h.hdr_size,
             UnitHeader::CompileV5(h) => h.hdr_size,
