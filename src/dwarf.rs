@@ -190,6 +190,27 @@ impl DwarfResolver {
         Ok(())
     }
 
+    /// Find the index of the DWSymInfo containing an address.
+    fn find_di_sym_idx_addr(&self, address: u64) -> Option<usize> {
+        self.ensure_addr_di_syms().ok()?;
+        let addr_di_syms = self.addr_di_syms.borrow();
+        let idx = match addr_di_syms.binary_search_by_key(&address, |sym| sym.address) {
+            Ok(idx) => idx,
+            Err(idx) => {
+                if idx == 0 {
+                    return None;
+                }
+                idx - 1
+            }
+        };
+        let sym = addr_di_syms[idx];
+        if address >= (sym.address + sym.size) {
+            None
+        } else {
+            Some(idx)
+        }
+    }
+
     fn ensure_cu_offsets(&self) -> Result<(), Error> {
         let mut cu_offsets = self.cu_offsets.borrow_mut();
         if !cu_offsets.is_empty() {
