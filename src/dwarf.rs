@@ -286,6 +286,8 @@ struct DWSymInfo<'a> {
     address: u64,
     size: u64,
     sym_type: SymbolType, // A function or a variable.
+    // The offset of the DIE from the start of the section.
+    die_offset: usize,
 }
 
 fn find_die_sibling(die: &mut debug_info::DIE<'_>) -> Option<usize> {
@@ -319,6 +321,7 @@ fn parse_die_subprogram<'a>(
     let mut addr: Option<u64> = None;
     let mut name_str: Option<&str> = None;
     let mut size = 0;
+    let die_offset = die.offset as usize;
 
     for (name, _form, _opt, value) in die {
         match name {
@@ -378,6 +381,7 @@ fn parse_die_subprogram<'a>(
             address,
             size,
             sym_type: SymbolType::Function,
+            die_offset,
         })),
         _ => Ok(None),
     }
@@ -416,7 +420,8 @@ fn debug_info_parse_symbols_cu<'a>(
             continue;
         }
 
-        if let Ok(Some(syminfo)) = parse_die_subprogram(&mut die, str_data) {
+        if let Ok(Some(mut syminfo)) = parse_die_subprogram(&mut die, str_data) {
+            syminfo.die_offset += dieiter.get_cu_offset();
             found_syms.push(syminfo);
         }
     }

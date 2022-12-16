@@ -885,6 +885,8 @@ pub struct DIEIter<'a> {
     abbrev: Option<&'a Abbrev>,
     die_reading_done: bool,
     done: bool,
+    // The offset the CU.
+    cu_off: usize,
 }
 
 impl<'a> DIEIter<'a> {
@@ -897,6 +899,28 @@ impl<'a> DIEIter<'a> {
         self.off = off - self.off_delta;
         self.cur_depth -= 1;
         self.die_reading_done = true;
+    }
+
+    #[inline]
+    pub fn get_cu_offset(&self) -> usize {
+        self.cu_off
+    }
+
+    /// This will use the DIE at the offset as root.  And, stop the
+    /// iterator when all children had been visited without going up
+    /// to the parent.
+    pub fn seek_to_any(&mut self, off: usize) -> Result<(), Error> {
+        let off = off - self.off_delta;
+        if off >= self.data.len() {
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "seek beyond the end of the CU",
+            ));
+        }
+        self.off = off;
+        self.cur_depth = 0;
+        self.die_reading_done = true;
+        Ok(())
     }
 
     #[inline(always)]
@@ -1010,12 +1034,13 @@ impl<'a> Iterator for UnitIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let off = self.off;
-        let uh = parse_unit_header(&self.info_data[off..])?;
+        let mut uh = parse_unit_header(&self.info_data[off..])?;
         let hdr_sz = uh.header_size();
-        self.off += uh.unit_size();
+        let unit_size = uh.unit_size();
+        self.off += unit_size;
 
         match uh {
-            UnitHeader::CompileV4(ref cuh) => {
+            UnitHeader::CompileV4(ref mut cuh) => {
                 let dwarf_sz = if cuh.bits64 { 8 } else { 4 };
                 let addr_sz = cuh.address_size as usize;
                 let (abbrevs, _) =
@@ -1023,7 +1048,7 @@ impl<'a> Iterator for UnitIter<'a> {
                 Some((
                     uh,
                     DIEIter {
-                        data: &self.info_data[off + hdr_sz..],
+                        data: &self.info_data[(off + hdr_sz)..(off + unit_size)],
                         dwarf_sz,
                         addr_sz,
                         off: 0,
@@ -1033,6 +1058,7 @@ impl<'a> Iterator for UnitIter<'a> {
                         abbrev: None,
                         die_reading_done: true,
                         done: false,
+                        cu_off: off,
                     },
                 ))
             }
