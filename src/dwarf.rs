@@ -26,6 +26,8 @@ mod constants;
 #[allow(non_upper_case_globals)]
 mod debug_info;
 
+mod aranges;
+
 #[repr(C, packed)]
 struct DebugLinePrologueV2 {
     total_length: u32,
@@ -686,6 +688,12 @@ fn parse_debug_line_elf_parser(
     }
 
     Ok(all_cus)
+}
+
+#[allow(dead_code)]
+fn parse_debug_line_elf(filename: &str) -> Result<Vec<DebugLineCU>, Error> {
+    let parser = Elf64Parser::open(filename)?;
+    parse_debug_line_elf_parser(&parser, &[])
 }
 
 /// DwarfResolver provide abilities to query DWARF information of binaries.
@@ -1465,19 +1473,6 @@ mod tests {
         assert_eq!(matrix[18].line, 794);
         assert_eq!(matrix[18].address, 0x18cde);
         assert!(matrix[18].is_stmt);
-    }
-
-    #[test]
-    fn test_parse_aranges_elf() {
-        let args: Vec<String> = env::args().collect();
-        let bin_name = &args[0];
-
-        let r = parse_aranges_elf(bin_name);
-        if r.is_err() {
-            println!("{:?}", r.as_ref().err().unwrap());
-        }
-        assert!(r.is_ok());
-        let _acus = r.unwrap();
     }
 
     #[test]
