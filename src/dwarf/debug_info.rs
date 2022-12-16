@@ -100,6 +100,14 @@ impl UnitHeader {
             UnitHeader::Unknown(_h) => 0,
         }
     }
+
+    pub fn version(&self) -> usize {
+        match self {
+            UnitHeader::CompileV4(_h) => 0x4,
+            UnitHeader::CompileV5(_h) => 0x5,
+            UnitHeader::Unknown(_h) => 0,
+        }
+    }
 }
 
 #[derive(Clone)]
