@@ -939,6 +939,10 @@ impl<'a> DIEIter<'a> {
         Ok(())
     }
 
+    pub fn get_current_depth(&self) -> usize {
+        self.cur_depth
+    }
+
     #[inline(always)]
     pub fn exhaust_die(&mut self) -> Result<(), Error> {
         assert!(

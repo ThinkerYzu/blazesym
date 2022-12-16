@@ -3,6 +3,8 @@ pub const DW_UT_type: u8 = 0x2;
 
 pub const DW_TAG_array_type: u8 = 0x1;
 pub const DW_TAG_enumeration_type: u8 = 0x4;
+pub const DW_TAG_formal_parameter: u8 = 0x5;
+pub const DW_TAG_lexical_block: u8 = 0xb;
 pub const DW_TAG_compile_unit: u8 = 0x11;
 pub const DW_TAG_subprogram: u8 = 0x2e;
 pub const DW_TAG_variable: u8 = 0x34;
@@ -16,7 +18,9 @@ pub const DW_AT_location: u8 = 0x02;
 pub const DW_AT_name: u8 = 0x03;
 pub const DW_AT_lo_pc: u8 = 0x11;
 pub const DW_AT_hi_pc: u8 = 0x12;
+pub const DW_AT_frame_base: u8 = 0x40;
 pub const DW_AT_entry_pc: u8 = 0x52;
+pub const DW_AT_ranges: u8 = 0x55;
 pub const DW_AT_linkage_name: u8 = 0x6e;
 
 pub const DW_FORM_addr: u8 = 0x01;
