@@ -136,6 +136,20 @@ impl Default for SymbolInfo {
     }
 }
 
+pub struct LocalVarInfo {
+    pub name: String,
+    /// The DWARF expression to compute where the variable is.
+    pub location: Vec<u8>,
+}
+
+/// Information of the local variables that are available at an
+/// address.
+pub struct LocalVarsInfo {
+    /// The DWARF expression to compute frame pointer.
+    pub frame_base: Vec<u8>,
+    pub variables: Vec<LocalVarInfo>,
+}
+
 /// The trait of symbol resolvers.
 ///
 /// An symbol resolver usually provides information from one symbol
@@ -157,6 +171,10 @@ trait SymResolver {
     fn addr_file_off(&self, addr: u64) -> Option<u64>;
     /// Get the file name of the shared object.
     fn get_obj_file_name(&self) -> &Path;
+    /// Get the information of local variables.
+    ///
+    /// Return `(fb, [(var-name, dwarf-expression), ...])`.
+    fn get_local_vars(&self, address: u64) -> Option<(&[u8], Vec<(String, &[u8])>)>;
 
     fn repr(&self) -> String;
 }
@@ -488,6 +506,14 @@ impl SymResolver for ElfResolver {
         &self.file_name
     }
 
+    fn get_local_vars(&self, addr: u64) -> Option<(&[u8], Vec<(String, &[u8])>)> {
+        let off = addr - self.loaded_address + self.loaded_to_virt;
+        match &self.backend {
+            ElfBackend::Dwarf(dwarf) => dwarf.get_local_vars(off),
+            ElfBackend::Elf(_parser) => None,
+        }
+    }
+
     fn repr(&self) -> String {
         match self.backend {
             ElfBackend::Dwarf(_) => format!("DWARF {}", self.file_name.display()),
@@ -561,6 +587,10 @@ impl SymResolver for KernelResolver {
 
     fn get_obj_file_name(&self) -> &Path {
         &self.kernel_image
+    }
+
+    fn get_local_vars(&self, _address: u64) -> Option<(&[u8], Vec<(String, &[u8])>)> {
+        None
     }
 
     fn repr(&self) -> String {
@@ -1121,6 +1151,67 @@ impl BlazeSymbolizer {
                         }
                     }
                     results
+                }
+            })
+            .collect();
+        info
+    }
+
+    /// Get the information of local variables.
+    ///
+    /// Get the list of local variables that are avaiable at an
+    /// instruction (address).  Every given address has a returned
+    /// entry.
+    ///
+    /// [`SymbolizerFeature::DebugInfoSymbols`] should be enabled to
+    /// load required data.
+    ///
+    /// # Arguments
+    ///
+    /// * `sym_srcs` - A list of symbol and debug sources.
+    /// * `addresses` - A list of addresses getting local variable
+    ///                 information.
+    pub fn get_local_vars(
+        &self,
+        sym_srcs: &[SymbolSrcCfg],
+        addresses: &[u64],
+    ) -> Vec<LocalVarsInfo> {
+        let resolver_map = if let Ok(map) = ResolverMap::new(sym_srcs, &self.cache_holder) {
+            map
+        } else {
+            #[cfg(debug_assertions)]
+            eprintln!("Fail to build ResolverMap");
+            return vec![];
+        };
+
+        let info: Vec<LocalVarsInfo> = addresses
+            .iter()
+            .map(|addr| {
+                let resolver = if let Some(resolver) = resolver_map.find_resolver(*addr) {
+                    resolver
+                } else {
+                    return LocalVarsInfo {
+                        frame_base: vec![],
+                        variables: vec![],
+                    };
+                };
+
+                if let Some((fb, vars)) = resolver.get_local_vars(*addr) {
+                    LocalVarsInfo {
+                        frame_base: Vec::from(fb),
+                        variables: vars
+                            .iter()
+                            .map(|(name, expr)| LocalVarInfo {
+                                name: name.to_string(),
+                                location: Vec::from(*expr),
+                            })
+                            .collect(),
+                    }
+                } else {
+                    LocalVarsInfo {
+                        frame_base: vec![],
+                        variables: vec![],
+                    }
                 }
             })
             .collect();
