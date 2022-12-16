@@ -41,6 +41,7 @@ pub struct DwarfResolver {
     addr_to_dlcu: Vec<(u64, u32)>,
     enable_debug_info_syms: bool,
     debug_info_syms: RefCell<Option<Vec<DWSymInfo<'static>>>>,
+    addr_di_syms: RefCell<Vec<&'static DWSymInfo<'static>>>,
     // Offsets to the CUs.
     cu_offsets: RefCell<Vec<usize>>,
 }
@@ -78,6 +79,7 @@ impl DwarfResolver {
             addr_to_dlcu,
             enable_debug_info_syms: debug_info_symbols,
             debug_info_syms: RefCell::new(None),
+            addr_di_syms: RefCell::new(vec![]),
             cu_offsets: RefCell::new(vec![]),
         })
     }
@@ -165,6 +167,25 @@ impl DwarfResolver {
             let mut debug_info_syms = debug_info_parse_symbols(&self.parser, None, 1)?;
             debug_info_syms.sort_by_key(|v: &DWSymInfo| -> &str { v.name });
             *dis_ref = Some(unsafe { mem::transmute(debug_info_syms) });
+        }
+        Ok(())
+    }
+
+    /// Create a sorted DWSymInfo list to map addresses to symbols.
+    fn ensure_addr_di_syms(&self) -> Result<(), Error> {
+        let mut addr_di_syms = self.addr_di_syms.borrow_mut();
+        if !addr_di_syms.is_empty() {
+            return Ok(());
+        }
+
+        self.ensure_debug_info_syms()?;
+        let di_syms_ref = self.debug_info_syms.borrow();
+        if let Some(ref di_syms) = *di_syms_ref {
+            *addr_di_syms = di_syms
+                .iter()
+                .map(|x| unsafe { mem::transmute(x) })
+                .collect();
+            addr_di_syms.sort_by_key(|v| v.address);
         }
         Ok(())
     }
