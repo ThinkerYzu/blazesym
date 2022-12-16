@@ -299,7 +299,6 @@ impl Elf64Parser {
         Ok(parser)
     }
 
-    #[cfg(test)]
     pub fn open(filename: &str) -> Result<Elf64Parser, Error> {
         let file = File::open(filename)?;
         let parser = Self::open_file(file);
